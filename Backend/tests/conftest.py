@@ -27,7 +27,6 @@ os.environ["ADMIN_EMAIL"] = "admin@test.com"
 os.environ["ADMIN_PASSWORD"] = "admin123"
 os.environ["FRONTEND_URL"] = "http://localhost:5173"
 
-
 from app.main import app
 from app.services.key_management_service import KMS
 from app.core.clients.llm_clients import LLMClient
