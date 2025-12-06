@@ -57,7 +57,7 @@ class TestAnnotateSingleChunk:
         # Verify in database
         updated_chunk = await mongo_db.chunks.find_one({"chunkId": "test-chunk-1"})
         assert updated_chunk is not None
-        assert updated_chunk.get("annotation") is not None
+        assert updated_chunk.get("description") is not None  # Database uses "description" field
         assert updated_chunk["status"] == AnnotationStatus.ANNOTATED.value
     
     async def test_annotate_chunk_not_found(
@@ -411,7 +411,7 @@ class TestAnnotationStatusTransitions:
         # Verify in database
         updated_chunk = await mongo_db.chunks.find_one({"chunkId": "status-test-chunk"})
         assert updated_chunk["status"] == AnnotationStatus.ANNOTATED.value
-        assert updated_chunk.get("annotation") is not None
+        assert updated_chunk.get("description") is not None  # Database uses "description" field
         assert updated_chunk.get("last_annotated_at") is not None
     
     async def test_annotation_updates_timestamp(
@@ -522,5 +522,5 @@ class TestAnnotationEndToEnd:
         for i in range(3):
             chunk = await mongo_db.chunks.find_one({"chunkId": f"multi-chunk-{i}"})
             assert chunk["status"] == AnnotationStatus.ANNOTATED.value
-            assert chunk.get("annotation") is not None
+            assert chunk.get("description") is not None  # Database uses "description" field
 

@@ -18,6 +18,12 @@ from datetime import datetime, timezone
 
 os.environ["JWT_SECRET"] = "test-secret-key-for-integration-tests-only"
 
+# Prevent Git from asking for credentials during tests (prevents hanging)
+# These environment variables tell Git to not prompt for username/password
+os.environ["GIT_TERMINAL_PROMPT"] = "0"  # Don't prompt in terminal
+os.environ["GIT_ASKPASS"] = "echo"  # Don't ask for passwords (echo returns empty)
+os.environ["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"  # Non-interactive SSH (no password prompts)
+
 mongo_uri = os.getenv("MONGO_URI", "mongodb://mongo:27017")
 is_ci = os.getenv("CI", "false").lower() == "true"
 if not is_ci and ("localhost" in mongo_uri or "127.0.0.1" in mongo_uri):
@@ -78,6 +84,9 @@ def event_loop():
     
     This is required for session-scoped async fixtures like mongo_client, qdrant_client, etc.
     The default pytest-asyncio event_loop is function-scoped, which doesn't work with session-scoped fixtures.
+    
+    Note: This generates a deprecation warning, but is the recommended approach for session-scoped fixtures
+    until pytest-asyncio provides a better solution. The warning is suppressed in pytest.ini.
     """
     loop = asyncio.new_event_loop()
     yield loop
@@ -199,7 +208,8 @@ async def clean_db(mongo_db: Database):
 
 @pytest_asyncio.fixture(scope="function")
 async def test_app(mongo_client: AsyncMongoClient, mongo_db: Database, 
-                   qdrant_client: AsyncQdrantClient, embedding_model: SentenceTransformer) -> FastAPI:
+                   qdrant_client: AsyncQdrantClient, embedding_model: SentenceTransformer,
+                   clean_db) -> FastAPI:  # Add clean_db dependency to ensure DB is cleaned before indexes are created
     """Create a test FastAPI app with real connections.
     
     Note: This fixture is function-scoped to ensure test isolation.
@@ -244,7 +254,8 @@ async def test_app(mongo_client: AsyncMongoClient, mongo_db: Database,
 @pytest_asyncio.fixture
 async def async_client(test_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     """Create an async HTTP client for testing API endpoints."""
-    async with AsyncClient(app=test_app, base_url="http://test") as client:
+    from httpx import ASGITransport
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
         yield client
 
 

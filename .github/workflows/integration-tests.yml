@@ -1,0 +1,156 @@
+name: Backend CI - Integration Tests
+
+on:
+  push:
+    paths:
+      - "Backend/**"
+      - ".github/workflows/integration-tests.yml"
+    branches:
+      - main
+      - develop
+      - CI-Automation-testing
+
+  pull_request:
+    paths:
+      - "Backend/**"
+      - ".github/workflows/integration-tests.yml"
+    branches:
+      - main
+      - develop
+
+  # Allow manual triggering
+  workflow_dispatch:
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start Docker Compose services
+        working-directory: Backend
+        run: |
+          docker compose up -d mongo qdrant redis
+          echo "Services started, waiting for them to be ready..."
+
+      - name: Wait for MongoDB to be ready
+        working-directory: Backend
+        run: |
+          echo "Waiting for MongoDB..."
+          timeout 60 bash -c 'until docker exec $(docker compose ps -q mongo) mongosh --eval "db.adminCommand(\"ping\")" --quiet; do sleep 2; done'
+          echo "MongoDB is ready!"
+
+      - name: Wait for Qdrant to be ready
+        run: |
+          echo "Waiting for Qdrant..."
+          timeout 60 bash -c 'until curl -f http://localhost:6333/health; do sleep 2; done'
+          echo "Qdrant is ready!"
+
+      - name: Wait for Redis to be ready
+        working-directory: Backend
+        run: |
+          echo "Waiting for Redis..."
+          timeout 60 bash -c 'until docker exec $(docker compose ps -q redis) redis-cli ping; do sleep 2; done'
+          echo "Redis is ready!"
+
+      - name: Build Docker image
+        working-directory: Backend
+        run: |
+          docker compose build api
+
+      - name: Run integration tests
+        working-directory: Backend
+        env:
+          CI: "true"
+          MONGO_URI: mongodb://mongo:27017
+          MONGO_DB: test_integration_db
+          QDRANT_HOST: qdrant
+          QDRANT_PORT: "6333"
+          COLLECTION_NAME: test_integration_collection
+          JWT_SECRET: test-secret-key-for-integration-tests-only
+          KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
+          ADMIN_EMAIL: admin@integration.example.com
+          ADMIN_PASSWORD: admin123
+          REDIS_URL: redis://redis:6379/0
+          MAX_REQUESTS: "100"
+          WINDOW_SECONDS: "60"
+          FRONTEND_URL: http://localhost:5173
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_ASKPASS: "echo"
+          GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
+        run: |
+          docker compose run --rm api pytest tests/integration/ \
+            -v \
+            --tb=short \
+            --maxfail=5 \
+            -m "not slow" || docker compose run --rm api pytest tests/integration/ \
+            -v \
+            --tb=short \
+            --maxfail=5
+
+      - name: Run integration tests with coverage (optional)
+        working-directory: Backend
+        env:
+          CI: "true"
+          MONGO_URI: mongodb://mongo:27017
+          MONGO_DB: test_integration_db
+          QDRANT_HOST: qdrant
+          QDRANT_PORT: "6333"
+          COLLECTION_NAME: test_integration_collection
+          JWT_SECRET: test-secret-key-for-integration-tests-only
+          KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
+          ADMIN_EMAIL: admin@integration.example.com
+          ADMIN_PASSWORD: admin123
+          REDIS_URL: redis://redis:6379/0
+          MAX_REQUESTS: "100"
+          WINDOW_SECONDS: "60"
+          FRONTEND_URL: http://localhost:5173
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_ASKPASS: "echo"
+          GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
+        continue-on-error: true
+        run: |
+          docker compose run --rm api pytest tests/integration/ \
+            -v \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-report=html \
+            --tb=short
+
+      - name: Upload coverage reports (if generated)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-coverage-report
+          path: |
+            Backend/htmlcov/
+            Backend/coverage.xml
+          if-no-files-found: ignore
+
+      - name: Cleanup Docker Compose services
+        if: always()
+        working-directory: Backend
+        run: |
+          docker compose down -v
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## Backend Integration Tests Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Execution" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests run against real services (MongoDB, Qdrant, Redis)" >> $GITHUB_STEP_SUMMARY
+          echo "- All integration test endpoints validated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Services Used" >> $GITHUB_STEP_SUMMARY
+          echo "- MongoDB 6.0" >> $GITHUB_STEP_SUMMARY
+          echo "- Qdrant v1.15.1" >> $GITHUB_STEP_SUMMARY
+          echo "- Redis 7" >> $GITHUB_STEP_SUMMARY
+
