@@ -49,6 +49,41 @@ jobs:
           touch .env || true
           echo "Created .env file placeholder"
 
+      - name: Check disk space before build
+        run: |
+          echo "Initial disk space:"
+          df -h
+          echo "Docker disk usage:"
+          docker system df || true
+
+      - name: Build Docker image (before starting services to save space)
+        working-directory: Backend
+        run: |
+          # Clean up before build to maximize available space
+          echo "Cleaning up before build..."
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          echo "Disk space before build:"
+          df -h
+          
+          # Build with BuildKit
+          DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build \
+            --progress=plain \
+            --no-cache=false \
+            api || {
+            echo "Build failed, doing aggressive cleanup and retrying..."
+            docker system prune -af --volumes || true
+            docker builder prune -af || true
+            docker container prune -f || true
+            docker image prune -af || true
+            echo "Disk space after aggressive cleanup:"
+            df -h
+            echo "Retrying build..."
+            DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --progress=plain api
+          }
+          echo "Disk space after build:"
+          df -h
+
       - name: Start Docker Compose services
         working-directory: Backend
         run: |
@@ -87,32 +122,6 @@ jobs:
           echo "Waiting for Redis..."
           timeout 60 bash -c 'until docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
           echo "Redis is ready!"
-
-      - name: Check disk space before build
-        run: |
-          echo "Disk space before build:"
-          df -h
-          echo "Docker disk usage:"
-          docker system df || true
-
-      - name: Build Docker image
-        working-directory: Backend
-        run: |
-          # Build with BuildKit and cache optimization
-          # Use --pull=never to avoid pulling base image if it exists
-          DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build \
-            --progress=plain \
-            --no-cache=false \
-            --pull=never \
-            api || {
-            echo "Build failed, cleaning up and retrying..."
-            docker system prune -af || true
-            echo "Disk space after cleanup:"
-            df -h
-            DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --progress=plain api
-          }
-          echo "Disk space after build:"
-          df -h
 
       - name: Run integration tests
         working-directory: Backend
