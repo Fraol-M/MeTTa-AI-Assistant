@@ -33,6 +33,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Free up disk space
+        run: |
+          echo "Cleaning up disk space..."
+          # Remove unused Docker resources
+          docker system prune -af --volumes || true
+          # Remove old build cache
+          docker builder prune -af || true
+          # Show available disk space
+          df -h
+
       - name: Create empty .env file if it doesn't exist
         working-directory: Backend
         run: |
@@ -78,10 +88,31 @@ jobs:
           timeout 60 bash -c 'until docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
           echo "Redis is ready!"
 
+      - name: Check disk space before build
+        run: |
+          echo "Disk space before build:"
+          df -h
+          echo "Docker disk usage:"
+          docker system df || true
+
       - name: Build Docker image
         working-directory: Backend
         run: |
-          docker compose build api
+          # Build with BuildKit and cache optimization
+          # Use --pull=never to avoid pulling base image if it exists
+          DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build \
+            --progress=plain \
+            --no-cache=false \
+            --pull=never \
+            api || {
+            echo "Build failed, cleaning up and retrying..."
+            docker system prune -af || true
+            echo "Disk space after cleanup:"
+            df -h
+            DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --progress=plain api
+          }
+          echo "Disk space after build:"
+          df -h
 
       - name: Run integration tests
         working-directory: Backend
@@ -158,6 +189,9 @@ jobs:
         working-directory: Backend
         run: |
           docker compose down -v
+          # Clean up Docker resources to free space
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
 
       - name: Test Summary
         if: always()
