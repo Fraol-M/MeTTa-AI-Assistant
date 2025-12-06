@@ -44,7 +44,7 @@ jobs:
         run: |
           docker compose up -d mongo qdrant redis
           echo "Services started, waiting for them to be ready..."
-          sleep 5
+          sleep 10
 
       - name: Wait for MongoDB to be ready
         working-directory: Backend
@@ -56,9 +56,19 @@ jobs:
           echo "MongoDB is ready!"
 
       - name: Wait for Qdrant to be ready
+        working-directory: Backend
         run: |
-          echo "Waiting for Qdrant..."
-          timeout 60 bash -c 'until curl -f http://localhost:6333/health; do sleep 2; done'
+          echo "Waiting for Qdrant container to be running..."
+          timeout 30 bash -c 'until docker compose ps qdrant | grep -q "Up"; do sleep 1; done'
+          echo "Qdrant container is running, checking health..."
+          # Qdrant health endpoint is /healthz - wait up to 90 seconds
+          timeout 90 bash -c 'until curl -sf http://localhost:6333/healthz 2>/dev/null | grep -q "healthz check passed"; do echo "Waiting for Qdrant health endpoint..."; sleep 3; done' || {
+            echo "Qdrant health check failed. Checking container status:"
+            docker compose ps qdrant
+            echo "Qdrant logs:"
+            docker compose logs --tail=30 qdrant
+            exit 1
+          }
           echo "Qdrant is ready!"
 
       - name: Wait for Redis to be ready
