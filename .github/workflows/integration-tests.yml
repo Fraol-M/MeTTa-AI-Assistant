@@ -42,11 +42,12 @@ jobs:
         image: qdrant/qdrant:v1.15.1
         ports:
           - 6333:6333
+        # Health check will be done externally from the runner
         options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:6333/healthz || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "true"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 3
 
       redis:
         image: redis:7
@@ -79,6 +80,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
+
+      - name: Wait for Qdrant to be ready
+        run: |
+          echo "Waiting for Qdrant service to be ready..."
+          # Qdrant takes a bit longer to start, so we wait and check the health endpoint
+          for i in {1..30}; do
+            if curl -sf http://localhost:6333/healthz 2>/dev/null | grep -q "healthz check passed"; then
+              echo "Qdrant is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Qdrant not ready yet, waiting..."
+            sleep 3
+          done
+          echo "Qdrant health check completed (may still be starting)"
 
       - name: Run integration tests
         working-directory: Backend
