@@ -33,17 +33,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Create empty .env file if it doesn't exist
+        working-directory: Backend
+        run: |
+          touch .env || true
+          echo "Created .env file placeholder"
+
       - name: Start Docker Compose services
         working-directory: Backend
         run: |
           docker compose up -d mongo qdrant redis
           echo "Services started, waiting for them to be ready..."
+          sleep 5
 
       - name: Wait for MongoDB to be ready
         working-directory: Backend
         run: |
-          echo "Waiting for MongoDB..."
-          timeout 60 bash -c 'until docker exec $(docker compose ps -q mongo) mongosh --eval "db.adminCommand(\"ping\")" --quiet; do sleep 2; done'
+          echo "Waiting for MongoDB container to be running..."
+          timeout 30 bash -c 'until docker compose ps mongo | grep -q "Up"; do sleep 1; done'
+          echo "MongoDB container is running, checking health..."
+          timeout 60 bash -c 'until docker compose exec -T mongo mongosh --eval "db.adminCommand(\"ping\")" --quiet 2>/dev/null; do sleep 2; done'
           echo "MongoDB is ready!"
 
       - name: Wait for Qdrant to be ready
@@ -56,7 +65,7 @@ jobs:
         working-directory: Backend
         run: |
           echo "Waiting for Redis..."
-          timeout 60 bash -c 'until docker exec $(docker compose ps -q redis) redis-cli ping; do sleep 2; done'
+          timeout 60 bash -c 'until docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
           echo "Redis is ready!"
 
       - name: Build Docker image
