@@ -43,7 +43,7 @@ async def create_user(user_data: UserCreate, mongo_db: Database = None) -> Optio
     existing_user = await collection.find_one({"email": user_data.email})
     if existing_user:
         raise ValueError(f"Email {user_data.email} is already registered.")
-    user_dict = user_data.dict()
+    user_dict = user_data.model_dump()
     # Convert role Enum to string for MongoDB
     user_dict["role"] = user_data.role.value
     # Use stripped string directly for hashing

@@ -71,7 +71,7 @@ async def update_chunk_endpoint(
     Update a chunk by its ID.
     Only the fields provided in the request body will be updated.
     """
-    update_data = {k: v for k, v in chunk_update.dict().items() if v is not None}
+    update_data = {k: v for k, v in chunk_update.model_dump().items() if v is not None}
     
     if not update_data:
         raise HTTPException(
