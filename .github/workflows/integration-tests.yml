@@ -26,117 +26,75 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # Use GitHub Actions service containers (no Docker build needed!)
+    services:
+      mongo:
+        image: mongo:6.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:v1.15.1
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:6333/healthz || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+          cache: 'pip'
 
-      - name: Free up disk space
+      - name: Install system dependencies
         run: |
-          echo "Cleaning up disk space..."
-          # Remove unused Docker resources
-          docker system prune -af --volumes || true
-          # Remove old build cache
-          docker builder prune -af || true
-          # Show available disk space
-          df -h
+          sudo apt-get update
+          sudo apt-get install -y git curl
+          git --version
 
-      - name: Create empty .env file if it doesn't exist
+      - name: Install Python dependencies
         working-directory: Backend
         run: |
-          touch .env || true
-          echo "Created .env file placeholder"
-
-      - name: Check disk space before build
-        run: |
-          echo "Initial disk space:"
-          df -h
-          echo "Docker disk usage:"
-          docker system df || true
-
-      - name: Build Docker image (before starting services to save space)
-        working-directory: Backend
-        run: |
-          # Clean up before build to maximize available space
-          echo "Cleaning up before build..."
-          docker system prune -af --volumes || true
-          docker builder prune -af || true
-          echo "Disk space before build:"
-          df -h
-          
-          # Build with BuildKit
-          DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build \
-            --progress=plain \
-            --no-cache=false \
-            api || {
-            echo "Build failed, doing aggressive cleanup and retrying..."
-            docker system prune -af --volumes || true
-            docker builder prune -af || true
-            docker container prune -f || true
-            docker image prune -af || true
-            echo "Disk space after aggressive cleanup:"
-            df -h
-            echo "Retrying build..."
-            DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --progress=plain api
-          }
-          echo "Disk space after build:"
-          df -h
-
-      - name: Start Docker Compose services
-        working-directory: Backend
-        run: |
-          docker compose up -d mongo qdrant redis
-          echo "Services started, waiting for them to be ready..."
-          sleep 10
-
-      - name: Wait for MongoDB to be ready
-        working-directory: Backend
-        run: |
-          echo "Waiting for MongoDB container to be running..."
-          timeout 30 bash -c 'until docker compose ps mongo | grep -q "Up"; do sleep 1; done'
-          echo "MongoDB container is running, checking health..."
-          timeout 60 bash -c 'until docker compose exec -T mongo mongosh --eval "db.adminCommand(\"ping\")" --quiet 2>/dev/null; do sleep 2; done'
-          echo "MongoDB is ready!"
-
-      - name: Wait for Qdrant to be ready
-        working-directory: Backend
-        run: |
-          echo "Waiting for Qdrant container to be running..."
-          timeout 30 bash -c 'until docker compose ps qdrant | grep -q "Up"; do sleep 1; done'
-          echo "Qdrant container is running, checking health..."
-          # Qdrant health endpoint is /healthz - wait up to 90 seconds
-          timeout 90 bash -c 'until curl -sf http://localhost:6333/healthz 2>/dev/null | grep -q "healthz check passed"; do echo "Waiting for Qdrant health endpoint..."; sleep 3; done' || {
-            echo "Qdrant health check failed. Checking container status:"
-            docker compose ps qdrant
-            echo "Qdrant logs:"
-            docker compose logs --tail=30 qdrant
-            exit 1
-          }
-          echo "Qdrant is ready!"
-
-      - name: Wait for Redis to be ready
-        working-directory: Backend
-        run: |
-          echo "Waiting for Redis..."
-          timeout 60 bash -c 'until docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
-          echo "Redis is ready!"
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Run integration tests
         working-directory: Backend
         env:
           CI: "true"
-          MONGO_URI: mongodb://mongo:27017
+          # Services are accessible via localhost in GitHub Actions
+          MONGO_URI: mongodb://localhost:27017
           MONGO_DB: test_integration_db
-          QDRANT_HOST: qdrant
+          QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
           COLLECTION_NAME: test_integration_collection
           JWT_SECRET: test-secret-key-for-integration-tests-only
           KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
           ADMIN_EMAIL: admin@integration.example.com
           ADMIN_PASSWORD: admin123
-          REDIS_URL: redis://redis:6379/0
+          REDIS_URL: redis://localhost:6379/0
           MAX_REQUESTS: "100"
           WINDOW_SECONDS: "60"
           FRONTEND_URL: http://localhost:5173
@@ -144,29 +102,29 @@ jobs:
           GIT_ASKPASS: "echo"
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
         run: |
-          docker compose run --rm api pytest tests/integration/ \
+          pytest tests/integration/ \
             -v \
             --tb=short \
             --maxfail=5 \
-            -m "not slow" || docker compose run --rm api pytest tests/integration/ \
+            -m "not slow" || pytest tests/integration/ \
             -v \
             --tb=short \
             --maxfail=5
 
-      - name: Run integration tests with coverage (optional)
+      - name: Run integration tests with coverage
         working-directory: Backend
         env:
           CI: "true"
-          MONGO_URI: mongodb://mongo:27017
+          MONGO_URI: mongodb://localhost:27017
           MONGO_DB: test_integration_db
-          QDRANT_HOST: qdrant
+          QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
           COLLECTION_NAME: test_integration_collection
           JWT_SECRET: test-secret-key-for-integration-tests-only
           KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
           ADMIN_EMAIL: admin@integration.example.com
           ADMIN_PASSWORD: admin123
-          REDIS_URL: redis://redis:6379/0
+          REDIS_URL: redis://localhost:6379/0
           MAX_REQUESTS: "100"
           WINDOW_SECONDS: "60"
           FRONTEND_URL: http://localhost:5173
@@ -175,7 +133,7 @@ jobs:
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
         continue-on-error: true
         run: |
-          docker compose run --rm api pytest tests/integration/ \
+          pytest tests/integration/ \
             -v \
             --cov=app \
             --cov-report=term-missing \
@@ -193,26 +151,17 @@ jobs:
             Backend/coverage.xml
           if-no-files-found: ignore
 
-      - name: Cleanup Docker Compose services
-        if: always()
-        working-directory: Backend
-        run: |
-          docker compose down -v
-          # Clean up Docker resources to free space
-          docker system prune -af --volumes || true
-          docker builder prune -af || true
-
       - name: Test Summary
         if: always()
         run: |
           echo "## Backend Integration Tests Completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Execution" >> $GITHUB_STEP_SUMMARY
-          echo "- Tests run against real services (MongoDB, Qdrant, Redis)" >> $GITHUB_STEP_SUMMARY
-          echo "- All integration test endpoints validated" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests run directly on GitHub Actions runner" >> $GITHUB_STEP_SUMMARY
+          echo "- No Docker image build required (saves disk space and time)" >> $GITHUB_STEP_SUMMARY
+          echo "- Services provided via GitHub Actions service containers" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Services Used" >> $GITHUB_STEP_SUMMARY
-          echo "- MongoDB 6.0" >> $GITHUB_STEP_SUMMARY
-          echo "- Qdrant v1.15.1" >> $GITHUB_STEP_SUMMARY
-          echo "- Redis 7" >> $GITHUB_STEP_SUMMARY
-
+          echo "- MongoDB 6.0 (service container)" >> $GITHUB_STEP_SUMMARY
+          echo "- Qdrant v1.15.1 (service container)" >> $GITHUB_STEP_SUMMARY
+          echo "- Redis 7 (service container)" >> $GITHUB_STEP_SUMMARY
