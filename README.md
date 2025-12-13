@@ -20,7 +20,7 @@ The goal is to enable intelligent code assistance over MeTTa codebases.
 ├── backend/      # API, RAG pipeline, model integration
 └── experiment/   # Experiments on AST-based chunking and embeddings
 ```
-
+#hi
 ---
 
 ## Setup Instructions
