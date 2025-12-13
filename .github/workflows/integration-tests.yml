@@ -26,65 +26,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # Use GitHub Actions service containers (no Docker build needed!)
-    services:
-      mongo:
-        image: mongo:6.0
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      qdrant:
-        image: qdrant/qdrant:v1.15.1
-        ports:
-          - 6333:6333
-        # Health check will be done externally from the runner
-        options: >-
-          --health-cmd "true"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 3
-
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.12"
-          cache: 'pip'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install system dependencies
+      - name: Free up disk space
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl
-          git --version
+          echo "Cleaning up disk space..."
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          echo "Available disk space:"
+          df -h
 
-      - name: Install Python dependencies
+      - name: Create empty .env file
         working-directory: Backend
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          touch .env || true
+
+      - name: Start Docker Compose services
+        working-directory: Backend
+        run: |
+          docker compose up -d mongo qdrant redis
+          echo "Services started, waiting for them to be ready..."
+          sleep 10
 
       - name: Wait for Qdrant to be ready
         run: |
           echo "Waiting for Qdrant service to be ready..."
-          # Qdrant takes a bit longer to start, so we wait and check the health endpoint
           for i in {1..30}; do
             if curl -sf http://localhost:6333/healthz 2>/dev/null | grep -q "healthz check passed"; then
               echo "Qdrant is ready!"
@@ -93,23 +64,41 @@ jobs:
             echo "Attempt $i/30: Qdrant not ready yet, waiting..."
             sleep 3
           done
-          echo "Qdrant health check completed (may still be starting)"
+          echo "Qdrant health check completed"
+
+      - name: Build optimized test Docker image
+        working-directory: Backend
+        run: |
+          echo "Building optimized test image (no Playwright, saves ~2GB)..."
+          echo "Disk space before build:"
+          df -h
+          
+          # Build using test Dockerfile (smaller, no Playwright)
+          DOCKER_BUILDKIT=1 docker build \
+            -f Dockerfile.test \
+            -t backend-api-test:latest \
+            --progress=plain \
+            .
+          
+          echo "Disk space after build:"
+          df -h
+          echo "Image size:"
+          docker images backend-api-test:latest --format "{{.Size}}"
 
       - name: Run integration tests
         working-directory: Backend
         env:
           CI: "true"
-          # Services are accessible via localhost in GitHub Actions
-          MONGO_URI: mongodb://localhost:27017
+          MONGO_URI: mongodb://mongo:27017
           MONGO_DB: test_integration_db
-          QDRANT_HOST: localhost
+          QDRANT_HOST: qdrant
           QDRANT_PORT: "6333"
           COLLECTION_NAME: test_integration_collection
           JWT_SECRET: test-secret-key-for-integration-tests-only
           KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
           ADMIN_EMAIL: admin@integration.example.com
           ADMIN_PASSWORD: admin123
-          REDIS_URL: redis://localhost:6379/0
+          REDIS_URL: redis://redis:6379/0
           MAX_REQUESTS: "100"
           WINDOW_SECONDS: "60"
           FRONTEND_URL: http://localhost:5173
@@ -117,29 +106,78 @@ jobs:
           GIT_ASKPASS: "echo"
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
         run: |
-          pytest tests/integration/ \
-            -v \
-            --tb=short \
-            --maxfail=5 \
-            -m "not slow" || pytest tests/integration/ \
-            -v \
-            --tb=short \
-            --maxfail=5
+          # Get the Docker Compose network name
+          NETWORK_NAME=$(docker compose -f docker-compose.yml ps -q mongo | xargs docker inspect --format='{{range $net, $v := .NetworkSettings.Networks}}{{$net}}{{end}}' | head -1)
+          echo "Using Docker network: $NETWORK_NAME"
+          
+          docker run --rm \
+            --network "$NETWORK_NAME" \
+            -v ${{ github.workspace }}/Backend:/app \
+            -w /app \
+            -e CI=true \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB=test_integration_db \
+            -e QDRANT_HOST=qdrant \
+            -e QDRANT_PORT=6333 \
+            -e COLLECTION_NAME=test_integration_collection \
+            -e JWT_SECRET=test-secret-key-for-integration-tests-only \
+            -e KEY_ENCRYPTION_KEY=Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk= \
+            -e ADMIN_EMAIL=admin@integration.example.com \
+            -e ADMIN_PASSWORD=admin123 \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e MAX_REQUESTS=100 \
+            -e WINDOW_SECONDS=60 \
+            -e FRONTEND_URL=http://localhost:5173 \
+            -e GIT_TERMINAL_PROMPT=0 \
+            -e GIT_ASKPASS=echo \
+            -e GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+            backend-api-test:latest \
+            pytest tests/integration/ \
+              -v \
+              --tb=short \
+              --maxfail=5 \
+              -m "not slow" || \
+          docker run --rm \
+            --network "$NETWORK_NAME" \
+            -v ${{ github.workspace }}/Backend:/app \
+            -w /app \
+            -e CI=true \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB=test_integration_db \
+            -e QDRANT_HOST=qdrant \
+            -e QDRANT_PORT=6333 \
+            -e COLLECTION_NAME=test_integration_collection \
+            -e JWT_SECRET=test-secret-key-for-integration-tests-only \
+            -e KEY_ENCRYPTION_KEY=Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk= \
+            -e ADMIN_EMAIL=admin@integration.example.com \
+            -e ADMIN_PASSWORD=admin123 \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e MAX_REQUESTS=100 \
+            -e WINDOW_SECONDS=60 \
+            -e FRONTEND_URL=http://localhost:5173 \
+            -e GIT_TERMINAL_PROMPT=0 \
+            -e GIT_ASKPASS=echo \
+            -e GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+            backend-api-test:latest \
+            pytest tests/integration/ \
+              -v \
+              --tb=short \
+              --maxfail=5
 
-      - name: Run integration tests with coverage
+      - name: Run integration tests with coverage (optional)
         working-directory: Backend
         env:
           CI: "true"
-          MONGO_URI: mongodb://localhost:27017
+          MONGO_URI: mongodb://mongo:27017
           MONGO_DB: test_integration_db
-          QDRANT_HOST: localhost
+          QDRANT_HOST: qdrant
           QDRANT_PORT: "6333"
           COLLECTION_NAME: test_integration_collection
           JWT_SECRET: test-secret-key-for-integration-tests-only
           KEY_ENCRYPTION_KEY: Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk=
           ADMIN_EMAIL: admin@integration.example.com
           ADMIN_PASSWORD: admin123
-          REDIS_URL: redis://localhost:6379/0
+          REDIS_URL: redis://redis:6379/0
           MAX_REQUESTS: "100"
           WINDOW_SECONDS: "60"
           FRONTEND_URL: http://localhost:5173
@@ -148,13 +186,36 @@ jobs:
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
         continue-on-error: true
         run: |
-          pytest tests/integration/ \
-            -v \
-            --cov=app \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-report=html \
-            --tb=short
+          NETWORK_NAME=$(docker compose -f docker-compose.yml ps -q mongo | xargs docker inspect --format='{{range $net, $v := .NetworkSettings.Networks}}{{$net}}{{end}}' | head -1)
+          docker run --rm \
+            --network "$NETWORK_NAME" \
+            -v ${{ github.workspace }}/Backend:/app \
+            -w /app \
+            -e CI=true \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB=test_integration_db \
+            -e QDRANT_HOST=qdrant \
+            -e QDRANT_PORT=6333 \
+            -e COLLECTION_NAME=test_integration_collection \
+            -e JWT_SECRET=test-secret-key-for-integration-tests-only \
+            -e KEY_ENCRYPTION_KEY=Gs8d0pOL_hhYuwRB_NKiVUh3-2j0PLQkm_i4iZGiEAk= \
+            -e ADMIN_EMAIL=admin@integration.example.com \
+            -e ADMIN_PASSWORD=admin123 \
+            -e REDIS_URL=redis://redis:6379/0 \
+            -e MAX_REQUESTS=100 \
+            -e WINDOW_SECONDS=60 \
+            -e FRONTEND_URL=http://localhost:5173 \
+            -e GIT_TERMINAL_PROMPT=0 \
+            -e GIT_ASKPASS=echo \
+            -e GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+            backend-api-test:latest \
+            pytest tests/integration/ \
+              -v \
+              --cov=app \
+              --cov-report=term-missing \
+              --cov-report=xml \
+              --cov-report=html \
+              --tb=short
 
       - name: Upload coverage reports (if generated)
         if: always()
@@ -166,17 +227,25 @@ jobs:
             Backend/coverage.xml
           if-no-files-found: ignore
 
+      - name: Cleanup
+        if: always()
+        working-directory: Backend
+        run: |
+          docker compose down -v
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+
       - name: Test Summary
         if: always()
         run: |
-          echo "## Backend Integration Tests Completed" >> $GITHUB_STEP_SUMMARY
+          echo "## Backend Integration Tests Completed (Docker Optimized)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Execution" >> $GITHUB_STEP_SUMMARY
-          echo "- Tests run directly on GitHub Actions runner" >> $GITHUB_STEP_SUMMARY
-          echo "- No Docker image build required (saves disk space and time)" >> $GITHUB_STEP_SUMMARY
-          echo "- Services provided via GitHub Actions service containers" >> $GITHUB_STEP_SUMMARY
+          echo "### Optimization" >> $GITHUB_STEP_SUMMARY
+          echo "- Uses optimized test Dockerfile (no Playwright, saves ~2GB)" >> $GITHUB_STEP_SUMMARY
+          echo "- Expected image size: ~8-10GB (vs 15.9GB production image)" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests run in Docker container for consistency" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Services Used" >> $GITHUB_STEP_SUMMARY
-          echo "- MongoDB 6.0 (service container)" >> $GITHUB_STEP_SUMMARY
-          echo "- Qdrant v1.15.1 (service container)" >> $GITHUB_STEP_SUMMARY
-          echo "- Redis 7 (service container)" >> $GITHUB_STEP_SUMMARY
+          echo "- MongoDB 6.0 (Docker Compose)" >> $GITHUB_STEP_SUMMARY
+          echo "- Qdrant v1.15.1 (Docker Compose)" >> $GITHUB_STEP_SUMMARY
+          echo "- Redis 7 (Docker Compose)" >> $GITHUB_STEP_SUMMARY
