@@ -31,8 +31,5 @@ Detailed setup guides are available in each component:
 * **Backend:** [`./backend/README.md`](https://github.com/iCog-Labs-Dev/MeTTa-AI-Assistant/blob/main/Backend/README.md)
 
 
-
-#New Line-test w
-#DUMMY COMMENT - test for intergration
 ---
 
