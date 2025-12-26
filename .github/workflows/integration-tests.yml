@@ -42,7 +42,7 @@ jobs:
         ports:
           - 6333:6333
         options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:6333/healthz || exit 1"
+          --health-cmd "bash -c 'cat < /dev/tcp/localhost/6333 > /dev/null 2>&1'"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -110,7 +110,7 @@ jobs:
             bash -c "pytest tests/integration/ -v --tb=short --maxfail=5 -m 'not slow' || pytest tests/integration/ -v --tb=short --maxfail=5"
 
       - name: Run integration tests with coverage (Docker)
-        if: always() # Run even if previous step failed, or optional: make this the main step
+        # Use default 'success()' condition so it skips if previous steps failed
         env:
           CI: "true"
           MONGO_URI: mongodb://localhost:27017
