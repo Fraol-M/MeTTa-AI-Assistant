@@ -18,7 +18,10 @@ export interface ChatResponse {
   response: string;
   model: string;
   provider: string;
-  session_id: string; // Assuming backend returns session_id
+  session_id: string; 
+  responseId?: string; 
+  messageId?: string; 
+  userMessageId?: string; 
 }
 
 // Fetch paginated chat sessions
@@ -66,3 +69,23 @@ export const sendMessage = async (data: ChatRequest): Promise<ChatResponse> => {
   }
 };
 
+// Feedback submission
+export interface FeedbackRequest {
+  responseId: string;
+  sessionId: string;
+  sentiment: 'positive' | 'neutral' | 'negative';
+  comment?: string;
+}
+
+export const submitFeedback = async (data: FeedbackRequest): Promise<any> => {
+  console.log('[chatService] Submitting feedback:', data);
+  try {
+    const response = await axiosInstance.post('/api/feedback/submit', data);
+    console.log('[chatService] Feedback response:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('[chatService] Feedback submission error:', error);
+    handleAxiosError(error, 'Feedback Error');
+    throw error;
+  }
+};
