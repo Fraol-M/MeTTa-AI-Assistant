@@ -1,4 +1,4 @@
-name: Backend CI - Integration Tests (No Docker)
+name: Backend CI - Integration Tests (Dockerized)
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # Use GitHub Actions service containers (no Docker build needed!)
+    # Service containers run on the host network of the runner
     services:
       mongo:
         image: mongo:6.0
@@ -61,29 +61,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.12"
-          cache: 'pip'
-
-      - name: Install system dependencies
+      - name: Build Docker image
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl
-          git --version
+          docker build -t backend-ci -f Backend/Dockerfile.ci Backend/
 
-      - name: Install Python dependencies
-        working-directory: Backend
-        run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
-
-      - name: Run integration tests
-        working-directory: Backend
+      - name: Run integration tests (Docker)
         env:
           CI: "true"
-          # Services are accessible via localhost in GitHub Actions
+          # Services are accessible via localhost because we use --network host
           MONGO_URI: mongodb://localhost:27017
           MONGO_DB: test_integration_db
           QDRANT_HOST: localhost
@@ -101,17 +86,31 @@ jobs:
           GIT_ASKPASS: "echo"
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
         run: |
-          pytest tests/integration/ \
-            -v \
-            --tb=short \
-            --maxfail=5 \
-            -m "not slow" || pytest tests/integration/ \
-            -v \
-            --tb=short \
-            --maxfail=5
+          # We use --network host so the container shares the network namespace with the runner
+          # This allows it to access the service containers exposed on localhost ports
+          docker run --network host \
+            --env CI \
+            --env MONGO_URI \
+            --env MONGO_DB \
+            --env QDRANT_HOST \
+            --env QDRANT_PORT \
+            --env COLLECTION_NAME \
+            --env JWT_SECRET \
+            --env KEY_ENCRYPTION_KEY \
+            --env ADMIN_EMAIL \
+            --env ADMIN_PASSWORD \
+            --env REDIS_URL \
+            --env MAX_REQUESTS \
+            --env WINDOW_SECONDS \
+            --env FRONTEND_URL \
+            --env GIT_TERMINAL_PROMPT \
+            --env GIT_ASKPASS \
+            --env GIT_SSH_COMMAND \
+            backend-ci \
+            bash -c "pytest tests/integration/ -v --tb=short --maxfail=5 -m 'not slow' || pytest tests/integration/ -v --tb=short --maxfail=5"
 
-      - name: Run integration tests with coverage
-        working-directory: Backend
+      - name: Run integration tests with coverage (Docker)
+        if: always() # Run even if previous step failed, or optional: make this the main step
         env:
           CI: "true"
           MONGO_URI: mongodb://localhost:27017
@@ -130,15 +129,29 @@ jobs:
           GIT_TERMINAL_PROMPT: "0"
           GIT_ASKPASS: "echo"
           GIT_SSH_COMMAND: "ssh -o BatchMode=yes"
-        continue-on-error: true
         run: |
-          pytest tests/integration/ \
-            -v \
-            --cov=app \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-report=html \
-            --tb=short
+          # Mount current directory to /app/coverage_output to get the reports back
+          docker run --network host \
+            -v ${{ github.workspace }}/Backend/coverage_reports:/app/coverage_reports \
+            --env CI \
+            --env MONGO_URI \
+            --env MONGO_DB \
+            --env QDRANT_HOST \
+            --env QDRANT_PORT \
+            --env COLLECTION_NAME \
+            --env JWT_SECRET \
+            --env KEY_ENCRYPTION_KEY \
+            --env ADMIN_EMAIL \
+            --env ADMIN_PASSWORD \
+            --env REDIS_URL \
+            --env MAX_REQUESTS \
+            --env WINDOW_SECONDS \
+            --env FRONTEND_URL \
+            --env GIT_TERMINAL_PROMPT \
+            --env GIT_ASKPASS \
+            --env GIT_SSH_COMMAND \
+            backend-ci \
+            bash -c "pytest tests/integration/ -v --cov=app --cov-report=term-missing --cov-report=xml:/app/coverage_reports/coverage.xml --cov-report=html:/app/coverage_reports/htmlcov --tb=short"
 
       - name: Upload coverage reports (if generated)
         if: always()
@@ -146,22 +159,17 @@ jobs:
         with:
           name: integration-coverage-report
           path: |
-            Backend/htmlcov/
-            Backend/coverage.xml
+            Backend/coverage_reports/htmlcov/
+            Backend/coverage_reports/coverage.xml
           if-no-files-found: ignore
 
       - name: Test Summary
         if: always()
         run: |
-          echo "## Backend Integration Tests Completed (No Docker)" >> $GITHUB_STEP_SUMMARY
+          echo "## Backend Integration Tests Completed (Dockerized)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Execution" >> $GITHUB_STEP_SUMMARY
-          echo "- Tests run directly on GitHub Actions runner" >> $GITHUB_STEP_SUMMARY
-          echo "- No Docker image build required (saves disk space and time)" >> $GITHUB_STEP_SUMMARY
-          echo "- Services provided via GitHub Actions service containers" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Services Used" >> $GITHUB_STEP_SUMMARY
-          echo "- MongoDB 6.0 (service container)" >> $GITHUB_STEP_SUMMARY
-          echo "- Qdrant v1.15.1 (service container)" >> $GITHUB_STEP_SUMMARY
-          echo "- Redis 7 (service container)" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests ran inside a lightweight Docker container (python:3.12-slim)" >> $GITHUB_STEP_SUMMARY
+          echo "- Playwright browsers were EXCLUDED from the image to save space" >> $GITHUB_STEP_SUMMARY
+          echo "- Services provided via GitHub Actions service containers (accessed via host network)" >> $GITHUB_STEP_SUMMARY
 
